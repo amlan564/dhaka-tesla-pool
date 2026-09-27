@@ -1,6 +1,7 @@
 import express from "express";
 import cors from "cors";
 import authRoutes from "./routes/auth.routes.js";
+import rideRoutes from "./routes/ride.routes.js";
 
 const app = express();
 
@@ -15,5 +16,6 @@ app.get("/health", (_req, res) => {
 });
 
 app.use("/api/auth", authRoutes);
+app.use("/api/rides", rideRoutes);
 
 export default app;
