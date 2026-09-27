@@ -7,12 +7,18 @@ export function areRoutesCompatible(
   pickupZoneB: RideZone,
   destinationZoneB: RideZone,
 ): boolean {
-  if (pickupZoneA === pickupZoneB) {
+  if (pickupZoneA !== pickupZoneB) {
+    return false;
+  }
+
+  if (destinationZoneA === destinationZoneB) {
     return true;
   }
 
+  const compatibleDestinations = COMPATIBLE_ROUTES[pickupZoneA] ?? [];
+
   return (
-    COMPATIBLE_ROUTES[pickupZoneA]?.includes(destinationZoneB) === true ||
-    COMPATIBLE_ROUTES[pickupZoneB]?.includes(destinationZoneA) === true
+    compatibleDestinations.includes(destinationZoneA) &&
+    compatibleDestinations.includes(destinationZoneB)
   );
 }

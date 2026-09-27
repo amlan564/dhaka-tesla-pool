@@ -153,6 +153,13 @@ export async function cancelRide(passengerId: string, rideId: string) {
         id: rideId,
         passengerId,
       },
+      include: {
+        poolMembership: {
+          include: {
+            pool: true,
+          },
+        },
+      },
     });
 
     if (!ride) {
@@ -165,6 +172,86 @@ export async function cancelRide(passengerId: string, rideId: string) {
       ride.status !== "DRIVER_ARRIVED"
     ) {
       throw new Error("Ride cannot be cancelled after it has started");
+    }
+
+    if (ride.poolMembership) {
+      const poolId = ride.poolMembership.poolId;
+
+      const pool = await tx.pool.findUnique({
+        where: {
+          id: poolId,
+        },
+        include: {
+          vehicle: true,
+        },
+      });
+
+      if (!pool) {
+        throw new Error("Pool not found");
+      }
+
+      await tx.poolMember.delete({
+        where: {
+          id: ride.poolMembership.id,
+        },
+      });
+
+      await tx.vehicle.update({
+        where: {
+          id: pool.vehicleId,
+        },
+        data: {
+          occupiedSeats: {
+            decrement: ride.requestedSeats,
+          },
+        },
+      });
+
+      const remainingMembers = await tx.poolMember.findMany({
+        where: {
+          poolId,
+        },
+        include: {
+          rideRequest: true,
+        },
+      });
+
+      if (remainingMembers.length === 0) {
+        await tx.pool.update({
+          where: {
+            id: poolId,
+          },
+          data: {
+            status: "CANCELLED",
+          },
+        });
+      } else {
+        for (const member of remainingMembers) {
+          const newFare = calculateFare(
+            member.rideRequest.pickupZone as any,
+            member.rideRequest.destinationZone as any,
+            remainingMembers.length,
+          );
+
+          await tx.poolMember.update({
+            where: {
+              id: member.id,
+            },
+            data: {
+              fare: newFare,
+            },
+          });
+
+          await tx.rideRequest.update({
+            where: {
+              id: member.rideRequestId,
+            },
+            data: {
+              estimatedFare: newFare * member.rideRequest.requestedSeats,
+            },
+          });
+        }
+      }
     }
 
     await tx.rideRequest.update({
@@ -195,6 +282,7 @@ export async function cancelRide(passengerId: string, rideId: string) {
             createdAt: "asc",
           },
         },
+        poolMembership: true,
       },
     });
   });

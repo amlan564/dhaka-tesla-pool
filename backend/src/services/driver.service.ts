@@ -1,9 +1,10 @@
 import "dotenv/config";
+
 import { PrismaPg } from "@prisma/adapter-pg";
-import { PrismaClient } from "../generated/prisma/client";
+import { Prisma, PrismaClient } from "../generated/prisma/client";
 import type { RideStatus } from "../generated/prisma/enums";
-import { areRoutesCompatible } from "./matching.service";
-import { calculateFare } from "./fare.service";
+import { areRoutesCompatible } from "./matching.service.js";
+import { calculateFare } from "./fare.service.js";
 
 const adapter = new PrismaPg({
   connectionString: process.env.DATABASE_URL!,
@@ -23,9 +24,7 @@ const ALLOWED_DRIVER_TRANSITIONS: Record<string, string[]> = {
 
 async function getDriverVehicle(driverId: string) {
   const vehicle = await prisma.vehicle.findUnique({
-    where: {
-      driverId,
-    },
+    where: { driverId },
   });
 
   if (!vehicle) {
@@ -42,12 +41,8 @@ export async function updateDriverVehicleStatus(
   const vehicle = await getDriverVehicle(driverId);
 
   return prisma.vehicle.update({
-    where: {
-      id: vehicle.id,
-    },
-    data: {
-      status,
-    },
+    where: { id: vehicle.id },
+    data: { status },
   });
 }
 
@@ -73,95 +68,87 @@ export async function getPendingRideRequests(driverId: string) {
   });
 }
 
-export async function acceptRideRequest(driverId: string, rideId: string) {
-  return prisma.$transaction(async (tx) => {
-    const vehicles = await tx.$queryRaw<
-      Array<{
-        id: string;
-        driverId: string;
-        name: string;
-        capacity: number;
-        status: "ONLINE" | "OFFLINE";
-      }>
-    >`
-      SELECT
-        "id",
-        "driverId",
-        "name",
-        "capacity",
-        "status"
-      FROM "Vehicle"
-      WHERE "driverId" = ${driverId}
-      FOR UPDATE
-    `;
-
-    const vehicle = vehicles[0];
-
-    if (!vehicle) {
-      throw new Error("Driver vehicle not found");
-    }
-
-    if (vehicle.status !== "ONLINE") {
-      throw new Error("Driver must be online to accept a ride");
-    }
-
-    const ride = await tx.rideRequest.findUnique({
-      where: {
-        id: rideId,
-      },
-      include: {
-        poolMembership: true,
-      },
-    });
-
-    if (!ride) {
-      throw new Error("Ride request not found");
-    }
-
-    if (ride.status !== "REQUESTED") {
-      throw new Error("Ride request is no longer available");
-    }
-
-    const activePool = await tx.pool.findFirst({
-      where: {
-        vehicleId: vehicle.id,
-        status: {
-          in: ACTIVE_POOL_STATUSES as any,
+export async function acceptRideRequestTransaction(
+  driverId: string,
+  rideId: string,
+) {
+  return prisma.$transaction(
+    async (tx) => {
+      const vehicle = await tx.vehicle.findUnique({
+        where: {
+          driverId,
         },
-      },
-      include: {
-        members: {
-          include: {
-            rideRequest: true,
-          },
-        },
-      },
-    });
+      });
 
-    let pool = activePool;
-
-    if (pool) {
-      for (const member of pool.members) {
-        const compatible = areRoutesCompatible(
-          ride.pickupZone as any,
-          ride.destinationZone as any,
-          member.rideRequest.pickupZone as any,
-          member.rideRequest.destinationZone as any,
-        );
-
-        if (!compatible) {
-          throw new Error(
-            "Ride request is not compatible with the current pool",
-          );
-        }
+      if (!vehicle) {
+        throw new Error("Driver vehicle not found");
       }
-    }
 
-    if (!pool) {
-      const createdPool = await tx.pool.create({
-        data: {
+      if (vehicle.status !== "ONLINE") {
+        throw new Error("Driver must be online to accept a ride");
+      }
+
+      const ride = await tx.rideRequest.findUnique({
+        where: {
+          id: rideId,
+        },
+        include: {
+          poolMembership: true,
+        },
+      });
+
+      if (!ride) {
+        throw new Error("Ride request not found");
+      }
+
+      if (ride.status !== "REQUESTED") {
+        throw new Error("Ride request is no longer available");
+      }
+
+      const reservedVehicles = await tx.$queryRaw<
+        Array<{
+          id: string;
+          driverId: string;
+          name: string;
+          capacity: number;
+          occupiedSeats: number;
+          status: "ONLINE" | "OFFLINE";
+        }>
+      >`
+        UPDATE "Vehicle"
+        SET
+          "occupiedSeats" = "occupiedSeats" + ${ride.requestedSeats},
+          "updatedAt" = NOW()
+        WHERE
+          "id" = ${vehicle.id}
+          AND "status" = 'ONLINE'
+          AND "occupiedSeats" + ${ride.requestedSeats} <= "capacity"
+        RETURNING
+          "id",
+          "driverId",
+          "name",
+          "capacity",
+          "occupiedSeats",
+          "status"
+      `;
+
+      if (reservedVehicles.length === 0) {
+        throw new Error(
+          `Not enough seats available. ${
+            vehicle.capacity - vehicle.occupiedSeats
+          } seat(s) remaining`,
+        );
+      }
+
+      /*
+       * Find the driver's active pool.
+       */
+      const activePool = await tx.pool.findFirst({
+        where: {
           vehicleId: vehicle.id,
-          status: "ACTIVE",
+          status: {
+            in: ACTIVE_POOL_STATUSES as any,
+          },
         },
         include: {
           members: {
@@ -172,121 +159,169 @@ export async function acceptRideRequest(driverId: string, rideId: string) {
         },
       });
 
-      pool = createdPool;
-    }
+      let pool = activePool;
 
-    const occupiedSeats = pool.members.reduce(
-      (total, member) => total + member.seats,
-      0,
-    );
+      /*
+       * Check route compatibility with every
+       * existing pool member.
+       */
+      if (pool) {
+        for (const member of pool.members) {
+          const compatible = areRoutesCompatible(
+            ride.pickupZone as any,
+            ride.destinationZone as any,
+            member.rideRequest.pickupZone as any,
+            member.rideRequest.destinationZone as any,
+          );
 
-    const availableSeats = vehicle.capacity - occupiedSeats;
+          if (!compatible) {
+            throw new Error(
+              "Ride request is not compatible with the current pool",
+            );
+          }
+        }
+      }
 
-    if (ride.requestedSeats > availableSeats) {
-      throw new Error(
-        `Not enough seats available. ${availableSeats} seat(s) remaining`,
-      );
-    }
+      /*
+       * Create a pool when the Tesla does not
+       * currently have an active pool.
+       */
+      if (!pool) {
+        pool = await tx.pool.create({
+          data: {
+            vehicleId: vehicle.id,
+            status: "ACTIVE",
+          },
+          include: {
+            members: {
+              include: {
+                rideRequest: true,
+              },
+            },
+          },
+        });
+      }
 
-    const newPoolSize = pool.members.length + 1;
+      /*
+       * Calculate fare based on the new pool size.
+       */
+      const newPoolSize = pool.members.length + 1;
 
-    const fare = calculateFare(
-      ride.pickupZone as any,
-      ride.destinationZone as any,
-      newPoolSize,
-    );
-
-    const poolMember = await tx.poolMember.create({
-      data: {
-        poolId: pool.id,
-        rideRequestId: ride.id,
-        seats: ride.requestedSeats,
-        fare,
-      },
-    });
-
-    const updatedRide = await tx.rideRequest.update({
-      where: {
-        id: ride.id,
-      },
-      data: {
-        status: "MATCHED",
-        estimatedFare: fare * ride.requestedSeats,
-      },
-    });
-
-    await tx.rideStatusHistory.create({
-      data: {
-        rideRequestId: ride.id,
-        fromStatus: "REQUESTED",
-        toStatus: "MATCHED",
-        changedBy: driverId,
-      },
-    });
-
-    const updatedMembers = await tx.poolMember.findMany({
-      where: {
-        poolId: pool.id,
-      },
-      include: {
-        rideRequest: true,
-      },
-    });
-
-    for (const member of updatedMembers) {
-      const memberFare = calculateFare(
-        member.rideRequest.pickupZone as any,
-        member.rideRequest.destinationZone as any,
-        updatedMembers.length,
+      const fare = calculateFare(
+        ride.pickupZone as any,
+        ride.destinationZone as any,
+        newPoolSize,
       );
 
-      await tx.poolMember.update({
-        where: {
-          id: member.id,
-        },
+      /*
+       * Add passenger to the pool.
+       */
+      await tx.poolMember.create({
         data: {
-          fare: memberFare,
+          poolId: pool.id,
+          rideRequestId: ride.id,
+          seats: ride.requestedSeats,
+          fare,
         },
       });
 
+      /*
+       * Move ride:
+       * REQUESTED → MATCHED
+       */
       await tx.rideRequest.update({
         where: {
-          id: member.rideRequestId,
+          id: ride.id,
         },
         data: {
-          estimatedFare: memberFare * member.rideRequest.requestedSeats,
+          status: "MATCHED",
+          estimatedFare: fare * ride.requestedSeats,
         },
       });
-    }
 
-    return tx.rideRequest.findUnique({
-      where: {
-        id: ride.id,
-      },
-      include: {
-        passenger: {
-          select: {
-            id: true,
-            fullName: true,
-            email: true,
-          },
+      /*
+       * Record lifecycle change.
+       */
+      await tx.rideStatusHistory.create({
+        data: {
+          rideRequestId: ride.id,
+          fromStatus: "REQUESTED",
+          toStatus: "MATCHED",
+          changedBy: driverId,
         },
-        poolMembership: {
-          include: {
-            pool: {
-              include: {
-                vehicle: true,
-                members: {
-                  include: {
-                    rideRequest: {
-                      select: {
-                        id: true,
-                        passengerId: true,
-                        pickupZone: true,
-                        destinationZone: true,
-                        requestedSeats: true,
-                        estimatedFare: true,
-                        status: true,
+      });
+
+      /*
+       * Recalculate all pool member fares
+       * because the pool size has changed.
+       */
+      const updatedMembers = await tx.poolMember.findMany({
+        where: {
+          poolId: pool.id,
+        },
+        include: {
+          rideRequest: true,
+        },
+      });
+
+      for (const member of updatedMembers) {
+        const memberFare = calculateFare(
+          member.rideRequest.pickupZone as any,
+          member.rideRequest.destinationZone as any,
+          updatedMembers.length,
+        );
+
+        await tx.poolMember.update({
+          where: {
+            id: member.id,
+          },
+          data: {
+            fare: memberFare,
+          },
+        });
+
+        await tx.rideRequest.update({
+          where: {
+            id: member.rideRequestId,
+          },
+          data: {
+            estimatedFare: memberFare * member.rideRequest.requestedSeats,
+          },
+        });
+      }
+
+      /*
+       * Return complete updated ride.
+       */
+      return tx.rideRequest.findUnique({
+        where: {
+          id: ride.id,
+        },
+        include: {
+          passenger: {
+            select: {
+              id: true,
+              fullName: true,
+              email: true,
+            },
+          },
+          poolMembership: {
+            include: {
+              pool: {
+                include: {
+                  vehicle: true,
+                  members: {
+                    include: {
+                      rideRequest: {
+                        select: {
+                          id: true,
+                          passengerId: true,
+                          pickupZone: true,
+                          destinationZone: true,
+                          requestedSeats: true,
+                          estimatedFare: true,
+                          status: true,
+                        },
                       },
                     },
                   },
@@ -294,15 +329,40 @@ export async function acceptRideRequest(driverId: string, rideId: string) {
               },
             },
           },
-        },
-        statusHistory: {
-          orderBy: {
-            createdAt: "asc",
+          statusHistory: {
+            orderBy: {
+              createdAt: "asc",
+            },
           },
         },
-      },
-    });
-  });
+      });
+    },
+    {
+      isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted,
+    },
+  );
+}
+
+export async function acceptRideRequest(driverId: string, rideId: string) {
+  const MAX_RETRIES = 3;
+
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      return await acceptRideRequestTransaction(driverId, rideId);
+    } catch (error) {
+      const isSerializationConflict =
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === "P2034";
+
+      if (isSerializationConflict && attempt < MAX_RETRIES) {
+        continue;
+      }
+
+      throw error;
+    }
+  }
+
+  throw new Error("Unable to accept ride request");
 }
 
 export async function updateRideStatusByDriver(
@@ -382,6 +442,17 @@ export async function updateRideStatusByDriver(
     }
 
     if (newStatus === "COMPLETED") {
+      await tx.vehicle.update({
+        where: {
+          id: vehicle.id,
+        },
+        data: {
+          occupiedSeats: {
+            decrement: ride.requestedSeats,
+          },
+        },
+      });
+
       const remaining = await tx.poolMember.count({
         where: {
           poolId: pool.id,

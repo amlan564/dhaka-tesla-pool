@@ -49,11 +49,12 @@ model User {
 }
 
 model Vehicle {
-  id       String        @id @default(uuid())
-  driverId String        @unique
-  name     String
-  capacity Int           @default(3)
-  status   VehicleStatus @default(OFFLINE)
+  id            String        @id @default(uuid())
+  driverId      String        @unique
+  name          String
+  capacity      Int           @default(3)
+  occupiedSeats Int           @default(0)
+  status        VehicleStatus @default(OFFLINE)
 
   driver User   @relation(fields: [driverId], references: [id])
   pools  Pool[]

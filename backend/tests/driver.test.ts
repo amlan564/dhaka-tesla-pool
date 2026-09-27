@@ -1,6 +1,18 @@
+import "dotenv/config";
+
+import { PrismaPg } from "@prisma/adapter-pg";
+import { PrismaClient } from "../src/generated/prisma/client";
 import request from "supertest";
-import { describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vitest";
 import app from "../src/app.js";
+
+const adapter = new PrismaPg({
+  connectionString: process.env.DATABASE_URL!,
+});
+
+const prisma = new PrismaClient({
+  adapter,
+});
 
 describe("Driver Management", () => {
   let driverToken: string;
@@ -77,6 +89,17 @@ describe("Driver Management", () => {
 
     expect(response.status).toBe(200);
     expect(response.body.ride.status).toBe("MATCHED");
+
+    const vehicle = await prisma.vehicle.findFirst({
+      where: {
+        driver: {
+          email: "jashim.tesla.pool@gmail.com",
+        },
+      },
+    });
+
+    expect(vehicle).toBeDefined();
+    expect(vehicle?.occupiedSeats).toBe(1);
   });
 
   it("should show the current pool", async () => {
@@ -87,6 +110,14 @@ describe("Driver Management", () => {
     expect(response.status).toBe(200);
     expect(response.body.pool).toBeDefined();
     expect(response.body.pool.members.length).toBeGreaterThan(0);
+
+    const occupiedSeats = response.body.pool.members.reduce(
+      (total: number, member: { seats: number }) => total + member.seats,
+      0,
+    );
+
+    expect(occupiedSeats).toBeLessThanOrEqual(3);
+    expect(occupiedSeats).toBe(1);
   });
 
   it("should move the ride to DRIVER_ARRIVED", async () => {
@@ -113,7 +144,7 @@ describe("Driver Management", () => {
     expect(response.body.ride.status).toBe("STARTED");
   });
 
-  it("should move the ride to COMPLETED", async () => {
+  it("should move the ride to COMPLETED and release the occupied seat", async () => {
     const response = await request(app)
       .patch(`/api/driver/rides/${rideId}/status`)
       .set("Authorization", `Bearer ${driverToken}`)
@@ -123,6 +154,17 @@ describe("Driver Management", () => {
 
     expect(response.status).toBe(200);
     expect(response.body.ride.status).toBe("COMPLETED");
+
+    const vehicle = await prisma.vehicle.findFirst({
+      where: {
+        driver: {
+          email: "jashim.tesla.pool@gmail.com",
+        },
+      },
+    });
+
+    expect(vehicle).toBeDefined();
+    expect(vehicle?.occupiedSeats).toBe(0);
   });
 
   it("should reject invalid driver state transitions", async () => {
@@ -143,5 +185,9 @@ describe("Driver Management", () => {
       .set("Authorization", `Bearer ${passengerToken}`);
 
     expect(response.status).toBe(403);
+  });
+
+  afterAll(async () => {
+    await prisma.$disconnect();
   });
 });
