@@ -4,8 +4,8 @@ import { FormEvent, useState } from "react";
 import { useRouter } from "next/navigation";
 import axios from "axios";
 import { toast } from "sonner";
+
 import api from "@/lib/api";
-import { saveAuth } from "@/lib/auth";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -18,51 +18,57 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 
-interface LoginResponse {
+interface RegisterResponse {
   data: {
-    token: string;
     user: {
       id: string;
       fullName: string;
       email: string;
-      role: "PASSENGER" | "DRIVER";
+      role: "PASSENGER";
     };
   };
 }
 
-export default function LoginPage() {
+export default function RegisterPage() {
   const router = useRouter();
 
+  const [fullName, setFullName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+
   const [loading, setLoading] = useState(false);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
+    if (password !== confirmPassword) {
+      toast.error("Passwords do not match.");
+      return;
+    }
+
+    if (password.length < 8) {
+      toast.error("Password must be at least 8 characters.");
+      return;
+    }
+
     setLoading(true);
 
     try {
-      const response = await api.post<LoginResponse>("/auth/login", {
+      await api.post<RegisterResponse>("/auth/register", {
+        fullName,
         email,
         password,
       });
 
-      const { token, user } = response.data.data;
+      toast.success("Account created successfully!");
 
-      saveAuth(token, user);
-
-      toast.success("Login successful!");
-
-      if (user.role === "DRIVER") {
-        router.push("/driver");
-      } else {
-        router.push("/passenger");
-      }
+      router.push("/login");
     } catch (error) {
       if (axios.isAxiosError(error)) {
         toast.error(
-          error.response?.data?.message || "Invalid email or password.",
+          error.response?.data?.message ||
+            "Registration failed. Please try again.",
         );
       } else {
         toast.error("Something went wrong. Please try again.");
@@ -73,18 +79,33 @@ export default function LoginPage() {
   }
 
   return (
-    <main className="flex min-h-screen items-center justify-center bg-muted px-4">
+    <main className="flex min-h-screen items-center justify-center bg-muted">
       <Card className="w-full max-w-md px-2 py-6">
         <CardHeader>
-          <CardTitle className="text-2xl font-bold">Welcome back</CardTitle>
+          <CardTitle className="text-2xl font-bold">
+            Create your account
+          </CardTitle>
 
           <CardDescription>
-            Sign in to your Dhaka Tesla Pool account.
+            Sign up as a passenger for Dhaka Tesla Pool.
           </CardDescription>
         </CardHeader>
 
         <CardContent>
           <form onSubmit={handleSubmit} className="space-y-5">
+            <div className="space-y-2">
+              <Label htmlFor="fullName">Full Name</Label>
+
+              <Input
+                id="fullName"
+                type="text"
+                placeholder="Enter your full name"
+                value={fullName}
+                onChange={(event) => setFullName(event.target.value)}
+                required
+              />
+            </div>
+
             <div className="space-y-2">
               <Label htmlFor="email">Email</Label>
 
@@ -111,22 +132,35 @@ export default function LoginPage() {
               />
             </div>
 
+            <div className="space-y-2">
+              <Label htmlFor="confirmPassword">Confirm Password</Label>
+
+              <Input
+                id="confirmPassword"
+                type="password"
+                placeholder="Enter your password again"
+                value={confirmPassword}
+                onChange={(event) => setConfirmPassword(event.target.value)}
+                required
+              />
+            </div>
+
             <Button
               type="submit"
               className="w-full cursor-pointer"
               disabled={loading}
             >
-              {loading ? "Signing in..." : "Sign in"}
+              {loading ? "Creating account..." : "Create account"}
             </Button>
 
             <p className="text-center text-sm text-muted-foreground">
-              Don't have an account?{" "}
+              Already have an account?{" "}
               <button
                 type="button"
-                onClick={() => router.push("/register")}
+                onClick={() => router.push("/login")}
                 className="font-medium text-foreground underline underline-offset-4 cursor-pointer"
               >
-                Register
+                Sign in
               </button>
             </p>
           </form>
