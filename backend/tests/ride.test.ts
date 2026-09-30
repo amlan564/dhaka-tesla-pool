@@ -4,6 +4,7 @@ import app from "../src/app.js";
 
 describe("Ride Management", () => {
   let passengerToken: string;
+  let otherPassengerToken: string;
   let driverToken: string;
   let rideId: string;
 
@@ -18,6 +19,18 @@ describe("Ride Management", () => {
     expect(response.body.data.token).toEqual(expect.any(String));
 
     passengerToken = response.body.data.token;
+  });
+
+  it("should login another passenger", async () => {
+    const response = await request(app).post("/api/auth/login").send({
+      email: "rafiq.tesla.pool@gmail.com",
+      password: "Password123!",
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.body.data.token).toEqual(expect.any(String));
+
+    otherPassengerToken = response.body.data.token;
   });
 
   it("should login the driver", async () => {
@@ -100,6 +113,15 @@ describe("Ride Management", () => {
 
     expect(response.status).toBe(200);
     expect(response.body.ride.id).toBe(rideId);
+  });
+
+  it("should reject another passenger from cancelling the ride", async () => {
+    const response = await request(app)
+      .patch(`/api/rides/${rideId}/cancel`)
+      .set("Authorization", `Bearer ${otherPassengerToken}`);
+
+    expect(response.status).toBe(400);
+    expect(response.body.message).toBe("Ride request not found");
   });
 
   it("should cancel a requested ride", async () => {
