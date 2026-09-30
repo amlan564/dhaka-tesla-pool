@@ -4,6 +4,7 @@ import {
   getCurrentPool,
   getPendingRides,
   getRideHistory,
+  getVehicle,
   updateRideStatus,
   updateVehicleStatus,
 } from "../controllers/driver.controller.js";
@@ -15,6 +16,8 @@ const router = Router();
 router.use(authenticate, authorize("DRIVER"));
 
 router.patch("/vehicle/status", updateVehicleStatus);
+
+router.get("/vehicle", getVehicle);
 
 router.get("/rides/requests", getPendingRides);
 

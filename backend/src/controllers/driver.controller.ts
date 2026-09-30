@@ -5,6 +5,7 @@ import {
   getDriverCurrentPool,
   getDriverRideHistory,
   getPendingRideRequests,
+  getDriverVehicleDetails,
   updateDriverVehicleStatus,
   updateRideStatusByDriver,
 } from "../services/driver.service.js";
@@ -53,6 +54,27 @@ export async function updateVehicleStatus(
     res.status(400).json({
       message,
     });
+  }
+}
+
+export async function getVehicle(
+  req: AuthenticatedRequest,
+  res: Response,
+): Promise<void> {
+  if (!req.user) {
+    res.status(401).json({ message: "Authentication required" });
+    return;
+  }
+
+  try {
+    const vehicle = await getDriverVehicleDetails(req.user.userId);
+
+    res.status(200).json({ vehicle });
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : "Failed to fetch vehicle";
+
+    res.status(400).json({ message });
   }
 }
 

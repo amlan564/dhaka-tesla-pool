@@ -34,6 +34,10 @@ async function getDriverVehicle(driverId: string) {
   return vehicle;
 }
 
+export async function getDriverVehicleDetails(driverId: string) {
+  return getDriverVehicle(driverId);
+}
+
 export async function updateDriverVehicleStatus(
   driverId: string,
   status: "ONLINE" | "OFFLINE",
@@ -140,9 +144,6 @@ export async function acceptRideRequestTransaction(
         );
       }
 
-      /*
-       * Find the driver's active pool.
-       */
       const activePool = await tx.pool.findFirst({
         where: {
           vehicleId: vehicle.id,
@@ -161,10 +162,6 @@ export async function acceptRideRequestTransaction(
 
       let pool = activePool;
 
-      /*
-       * Check route compatibility with every
-       * existing pool member.
-       */
       if (pool) {
         for (const member of pool.members) {
           const compatible = areRoutesCompatible(
@@ -182,10 +179,6 @@ export async function acceptRideRequestTransaction(
         }
       }
 
-      /*
-       * Create a pool when the Tesla does not
-       * currently have an active pool.
-       */
       if (!pool) {
         pool = await tx.pool.create({
           data: {
@@ -202,9 +195,6 @@ export async function acceptRideRequestTransaction(
         });
       }
 
-      /*
-       * Calculate fare based on the new pool size.
-       */
       const newPoolSize = pool.members.length + 1;
 
       const fare = calculateFare(
@@ -225,23 +215,17 @@ export async function acceptRideRequestTransaction(
         },
       });
 
-      /*
-       * Move ride:
-       * REQUESTED → MATCHED
-       */
       await tx.rideRequest.update({
         where: {
           id: ride.id,
         },
         data: {
           status: "MATCHED",
+          driverId,
           estimatedFare: fare * ride.requestedSeats,
         },
       });
 
-      /*
-       * Record lifecycle change.
-       */
       await tx.rideStatusHistory.create({
         data: {
           rideRequestId: ride.id,
@@ -493,6 +477,13 @@ export async function getDriverCurrentPool(driverId: string) {
     include: {
       vehicle: true,
       members: {
+        where: {
+          rideRequest: {
+            status: {
+              notIn: ["COMPLETED", "CANCELLED"],
+            },
+          },
+        },
         include: {
           rideRequest: {
             include: {
@@ -512,15 +503,9 @@ export async function getDriverCurrentPool(driverId: string) {
 }
 
 export async function getDriverRideHistory(driverId: string) {
-  const vehicle = await getDriverVehicle(driverId);
-
   return prisma.rideRequest.findMany({
     where: {
-      poolMembership: {
-        pool: {
-          vehicleId: vehicle.id,
-        },
-      },
+      driverId,
       status: {
         in: ["COMPLETED", "CANCELLED"],
       },
